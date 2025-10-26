@@ -1,0 +1,97 @@
+<#
+.SYNOPSIS
+    Copy files/folders with optional recursion and timestamp preservation.
+
+.USAGE
+    .\Copy-File.ps1 -Source C:\from -Destination D:\to -Recurse -Force -PreserveTime
+#>
+
+[CmdletBinding(SupportsShouldProcess = $true)]
+param(
+        [Parameter(Position=0, Mandatory = $true)]
+        [string] $Source,
+
+        [Parameter(Position=1, Mandatory = $true)]
+        [string] $Destination,
+
+        [switch] $Recurse,
+        [switch] $Force,
+        [switch] $PreserveTime
+)
+
+function Set-Timestamps {
+        param($SrcItem, $DstPath)
+        try {
+                $dst = Get-Item -LiteralPath $DstPath -Force
+                $dst.CreationTime   = $SrcItem.CreationTime
+                $dst.LastWriteTime  = $SrcItem.LastWriteTime
+                $dst.LastAccessTime = $SrcItem.LastAccessTime
+        } catch {
+                Write-Verbose "Failed to set timestamps for $DstPath: $_"
+        }
+}
+
+try {
+        if (-not (Test-Path -LiteralPath $Source)) {
+                throw "Source path not found: $Source"
+        }
+
+        $srcRoot = Get-Item -LiteralPath $Source -Force
+
+        if ($srcRoot.PSIsContainer) {
+                # Ensure destination directory exists
+                if (-not (Test-Path -LiteralPath $Destination)) {
+                        if ($PSCmdlet.ShouldProcess($Destination, "Create directory")) {
+                                New-Item -LiteralPath $Destination -ItemType Directory -Force | Out-Null
+                        }
+                }
+
+                # Collect items to copy
+                if ($Recurse) {
+                        $items = Get-ChildItem -LiteralPath $Source -Recurse -Force -ErrorAction Stop
+                        # include the root directory itself for timestamp copying
+                        $items = ,$srcRoot + $items
+                } else {
+                        $items = Get-ChildItem -LiteralPath $Source -Force -ErrorAction Stop
+                }
+
+                foreach ($item in $items) {
+                        # compute relative path from source root
+                        $rel = $item.FullName.Substring($srcRoot.FullName.Length).TrimStart('\','/')
+                        $destPath = Join-Path -Path $Destination -ChildPath $rel
+
+                        if ($item.PSIsContainer) {
+                                if ($PSCmdlet.ShouldProcess($item.FullName, "Create directory -> $destPath")) {
+                                        New-Item -LiteralPath $destPath -ItemType Directory -Force | Out-Null
+                                }
+                                if ($PreserveTime) { Set-Timestamps -SrcItem $item -DstPath $destPath }
+                        } else {
+                                $destDir = Split-Path -LiteralPath $destPath -Parent
+                                if (-not (Test-Path -LiteralPath $destDir)) {
+                                        if ($PSCmdlet.ShouldProcess($destDir, "Create directory")) {
+                                                New-Item -LiteralPath $destDir -ItemType Directory -Force | Out-Null
+                                        }
+                                }
+
+                                if ($PSCmdlet.ShouldProcess($item.FullName, "Copy file -> $destPath")) {
+                                        Copy-Item -LiteralPath $item.FullName -Destination $destPath -Force:$Force -ErrorAction Stop
+                                }
+                                if ($PreserveTime) { Set-Timestamps -SrcItem $item -DstPath $destPath }
+                        }
+                }
+
+        } else {
+                # Source is a single file
+                $dstFinal = if ((Test-Path -LiteralPath $Destination) -and (Get-Item -LiteralPath $Destination).PSIsContainer) {
+                        Join-Path -Path $Destination -ChildPath $srcRoot.Name
+                } else { $Destination }
+
+                if ($PSCmdlet.ShouldProcess($srcRoot.FullName, "Copy file -> $dstFinal")) {
+                        Copy-Item -LiteralPath $srcRoot.FullName -Destination $dstFinal -Force:$Force -ErrorAction Stop
+                }
+                if ($PreserveTime) { Set-Timestamps -SrcItem $srcRoot -DstPath $dstFinal }
+        }
+} catch {
+        Write-Error $_.Exception.Message
+        exit 1
+}
